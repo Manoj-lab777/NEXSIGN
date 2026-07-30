@@ -81,5 +81,45 @@ if run:
 
             FRAME_WINDOW.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     cap.release()
-else:
-    st.write("Check the box above to start the camera")  
+    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+import av
+
+CONFIDENCE_THRESHOLD = 0.75
+
+prediction_text = st.empty()
+
+class ISLProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.holistic = mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        self.sequence = []
+        self.current_word = ""
+        self.current_conf = 0.0
+
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        image, results = mediapipe_detection(img, self.holistic)
+        draw_landmarks(image, results)
+
+        keypoints = extract_keypoints(results)
+        self.sequence.append(keypoints)
+        self.sequence = self.sequence[-30:]
+
+        if len(self.sequence) == 30:
+            res = model.predict(np.expand_dims(self.sequence, axis=0), verbose=0)[0]
+            confidence = np.max(res)
+            if confidence > CONFIDENCE_THRESHOLD:
+                self.current_word = actions[np.argmax(res)]
+                self.current_conf = confidence * 100
+
+        cv2.putText(image, self.current_word, (20, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+
+        return av.VideoFrame.from_ndarray(image, format="bgr24")
+
+ctx = webrtc_streamer(key="isl", video_processor_factory=ISLProcessor)
+
+if ctx.video_processor:
+    prediction_text.markdown(
+        f"### Sign detected: **{ctx.video_processor.current_word}** "
+        f"({ctx.video_processor.current_conf:.1f}% confidence)"
+    )
